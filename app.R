@@ -31,8 +31,12 @@ ui <- fluidPage(
           tableOutput("etl_times")
         ),
         tabPanel(
-          "Executing scripts",
+          "Executing scripts for B",
           tableOutput("executing_scripts")
+        ),
+        tabPanel(
+          "Condition occurrence",
+          tableOutput("condition_occ")
         ),
         tabPanel(
           "Skipped scripts",
@@ -257,8 +261,7 @@ server <- function(input, output, session) {
       df %>%
         transmute(
           script_name = .data$script_name,
-          File        = fname,
-          is_B        = .data$is_B
+          File        = fname
         ) %>%
         distinct(script_name, File, .keep_all = TRUE)
     })
@@ -273,8 +276,9 @@ server <- function(input, output, session) {
     
     wide <- long %>%
       mutate(
+        highlight = stringr::str_detect(script_name, "^condition-occurrence-"),
         value = ifelse(
-          is_B,
+          highlight,
           sprintf('<span style="color: green; font-weight: bold;">%s</span>', script_name),
           script_name
         )
@@ -291,6 +295,132 @@ server <- function(input, output, session) {
     wide
   }, sanitize.text.function = function(x) x)
   
+  # ------------------------------------------------------------------
+  # Condition occurrence tab:
+  #   rows   = table name ("condition_occurrence") + source
+  #   cols   = log file names
+  #   cells  = details (diagnoses/services/ncsp/dispensing...) with
+  #            green = executed, red = skipped
+  # ------------------------------------------------------------------
+  output$condition_occ <- renderTable({
+    res_list <- parsed_store()
+    req(length(res_list))
+    
+    file_names <- names(res_list)
+    
+    
+    parse_condition_name <- function(file_or_name) {
+      base <- sub(".*/", "", file_or_name)
+      base <- gsub("^([A-Z][0-9]+|[0-9]+)-", "", base)
+      base <- gsub("-to-staging\\.sql$", "", base)
+      base <- gsub("\\.sql$", "", base)
+
+      if (!grepl("^condition-occurrence-", base)) {
+        return(list(source = NA_character_, detail = NA_character_))
+      }
+      
+      rest  <- sub("^condition-occurrence-", "", base)
+      parts <- strsplit(rest, "-", fixed = TRUE)[[1]]
+      if (length(parts) < 2) {
+        return(list(source = parts[1], detail = NA_character_))
+      }
+      source <- parts[1]
+      detail <- paste(parts[-1], collapse = "-")
+      list(source = source, detail = detail)
+    }
+    
+    long_list <- lapply(file_names, function(fname) {
+      x <- res_list[[fname]]
+      
+      exec <- x$executing_scripts
+      exec_co <- NULL
+      if (!isTRUE(x$error) && !is.null(exec) && nrow(exec)) {
+        masks <- grepl("condition-occurrence-", exec$script_file)
+        if (any(masks)) {
+          sub_df <- exec[masks, , drop = FALSE]
+          parsed <- lapply(sub_df$script_file, parse_condition_name)
+          src    <- vapply(parsed, function(z) z$source, character(1))
+          det    <- vapply(parsed, function(z) z$detail, character(1))
+          
+          exec_co <- tibble(
+            table  = "condition_occurrence",
+            source = src,
+            detail = det,
+            File   = fname,
+            status = "run"
+          ) %>%
+            filter(!is.na(source), !is.na(detail))
+        }
+      }
+      
+      skip <- x$skipped
+      skip_co <- NULL
+      if (!isTRUE(x$error) && !is.null(skip) && nrow(skip)) {
+        masks <- grepl("condition-occurrence-", skip$file)
+        if (any(masks)) {
+          sub_df <- skip[masks, , drop = FALSE]
+          parsed <- lapply(sub_df$file, parse_condition_name)
+          src    <- vapply(parsed, function(z) z$source, character(1))
+          det    <- vapply(parsed, function(z) z$detail, character(1))
+          
+          skip_co <- tibble(
+            table  = "condition_occurrence",
+            source = src,
+            detail = det,
+            File   = fname,
+            status = "skipped"
+          ) %>%
+            filter(!is.na(source), !is.na(detail))
+        }
+      }
+      
+      bind_rows(exec_co, skip_co)
+    })
+    
+    long <- bind_safe(long_list)
+    
+    if (is.null(long) || !nrow(long)) {
+      return(tibble(info = "No condition-occurrence scripts found."))
+    }
+    
+    long <- long %>%
+      group_by(table, source, detail, File) %>%
+      summarise(
+        status = if (any(status == "run")) "run" else "skipped",
+        .groups = "drop"
+      )
+    
+    long <- long %>%
+      mutate(
+        display = ifelse(
+          status == "run",
+          sprintf('<span style="color: green; font-weight: bold;">%s</span>', detail),
+          sprintf('<span style="color: red; font-weight: bold;">%s</span>', detail)
+        )
+      )
+
+    cells <- long %>%
+      group_by(table, source, File) %>%
+      summarise(
+        value = paste(display, collapse = ", "),
+        .groups = "drop"
+      )
+
+    wide <- cells %>%
+      mutate(File = factor(File, levels = file_names)) %>%
+      tidyr::pivot_wider(
+        names_from  = File,
+        values_from = value,
+        names_sort  = FALSE
+      ) %>%
+      arrange(source) %>%
+      rename(
+        `Table name` = table,
+        Source       = source
+      )
+    
+    wide
+  }, sanitize.text.function = function(x) x)
   # ------------------------------------------------------------------
   # Skipped scripts: long table with file column
   # ------------------------------------------------------------------
@@ -316,14 +446,23 @@ server <- function(input, output, session) {
       return(tibble(info = "No skipped scripts found."))
     }
     
-    long %>%
+    table <- long %>%
       arrange(directory, file, LogFile) %>%
       rename(
         Directory = directory,
         Reason    = reason,
         Script    = file
+      ) %>%
+      mutate(
+        Script = ifelse(
+          stringr::str_detect(Script, "condition-occurrence"),
+          sprintf('<span style="color: red; font-weight: bold;">%s</span>', Script),
+          Script
+        )
       )
-  })
+    
+    table
+  }, sanitize.text.function = function(x) x)
   
   # ------------------------------------------------------------------
   # Errors: wide table without label column

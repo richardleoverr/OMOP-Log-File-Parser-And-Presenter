@@ -127,7 +127,8 @@ parse_log <- function(log_path) {
     script_file = script_file,
     script_name = script_name,
     is_B        = is_B
-  )
+  ) %>%
+    filter(is_B)  
   
   
   
