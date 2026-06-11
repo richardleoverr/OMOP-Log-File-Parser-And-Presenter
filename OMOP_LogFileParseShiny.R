@@ -14,7 +14,7 @@ parse_log <- function(log_path) {
   schema <- str_match(lines, "^TARGETDB_SCHEMA_OHDSI_CDM:\\s*(.*)$")[,2]
   schema <- schema[!is.na(schema)][1]
   
-  regex_for_run_date <- "^[A-Z][a-z]{2} [A-Z][a-z]{2} \\s*\\d{1,2} \\d{2}:\\d{2}:\\d{2} [A-Z]{3,4} \\d{4}$"
+  regex_for_run_date <- "^[A-Z][a-z]{2}\\s+[A-Z][a-z]{2}\\s+\\d{1,2}\\s+\\d{1,2}:\\d{2}:\\d{2}(\\s+(AM|PM))?\\s+[A-Z]{3,4}\\s+\\d{4}$"
   run_date <- lines[str_detect(lines, regex_for_run_date)][1]
   
   psql_line <- lines[str_detect(lines, "^psql\\b")][1]
@@ -42,15 +42,23 @@ parse_log <- function(log_path) {
   cdm_release_date  <- str_match(psql_line,"--set=cdm_release_date=(\\S+)")[,2] |> gsub("^'|'$", "", x = _)
   cdm_version  <- str_match(psql_line,"--set=cdm_version=(\\S+)")[,2] |> gsub("^'|'$", "", x = _)
   
-  ajad <- str_extract(lines, "^[A-Z][a-z]*\\s[A-Z][a-z]*\\s{1,2}\\d{1,2}\\s\\d{2}:\\d{2}:\\d{2}\\s[A-Z]*\\s\\d{4}") |> na.omit()
+  ajad <- lines[str_detect(lines, regex_for_run_date)]
   alguse_aeg <- ajad[1]
-  lopp_aeg <- ajad[2]
+  lopp_aeg <- tail(ajad, 1)
   
-  alguse_aeg_puhastus <- sub(" [A-Z]{3,4} ", " ", alguse_aeg)
-  lopp_aeg_puhastus <- sub(" [A-Z]{3,4} ", " ", lopp_aeg)
+  parse_log_time <- function(x) {
+    x <- str_squish(x)
+    x <- sub(" ([A-Z]{3,4}) (\\d{4})$", " \\2", x)
+    
+    if (str_detect(x, "\\b(AM|PM)\\b")) {
+      as.POSIXct(x, format = "%a %b %e %I:%M:%S %p %Y", tz = "Europe/Tallinn")
+    } else {
+      as.POSIXct(x, format = "%a %b %e %H:%M:%S %Y", tz = "Europe/Tallinn")
+    }
+  }
   
-  alguse_aeg <- as.POSIXct(alguse_aeg_puhastus, format = "%a %b %e %H:%M:%S %Y", tz = "Europe/Tallinn")
-  lopp_aeg <- as.POSIXct(lopp_aeg_puhastus, format = "%a %b %e %H:%M:%S %Y", tz = "Europe/Tallinn")
+  alguse_aeg <- parse_log_time(alguse_aeg)
+  lopp_aeg <- parse_log_time(lopp_aeg)
   
   sec_to_hms <- function(x) {
     h <- x %/% 3600; m <- (x %% 3600) %/% 60; s <- x %% 60
@@ -74,7 +82,7 @@ parse_log <- function(log_path) {
     regexpr("\\d{4}-\\d{2}-\\d{2}\\s\\d{2}:\\d{2}:\\d{2}", ETL_tabeli_ajad_read, perl = TRUE)
   )
   
-  lopp_aeg_short <- sub(" [A-Za-z]+$", "", lopp_aeg)
+  lopp_aeg_short <- format(lopp_aeg, "%Y-%m-%d %H:%M:%S")
   ETL_tabeli_ajad_read <- append(ETL_tabeli_ajad_read, lopp_aeg_short)
   ETL_tabeli_ajad_read <- as.POSIXct(ETL_tabeli_ajad_read, format = "%Y-%m-%d %H:%M:%S", tz = "Europe/Tallinn")
   
